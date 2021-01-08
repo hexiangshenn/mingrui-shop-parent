@@ -1,0 +1,3039 @@
+
+
+## 为什么要用DTO传输
+
+前台在与后台交互中,为了处理前台需要的某些额外功能,所添加的临时字段,我们就把需要处理的字段放在DTO里面,
+
+Entity只放数据库中的字段,这样有利于维护
+
+## 为什么要用Result设置数据类型
+
+# 上传操作
+
+ 图片上传
+
+图片上传说白了就是文件上传
+
+有可能每个服务都会有涉及到文件上传的操作
+
+所以我们把文件上传抽出来作为一个公共的文件上传服务
+
+##### upload.vue 88&89
+
+```js
+//文件长传成功后回显后台返回的图片
+this.dialogImageUrl = file.response.data;
+//给input表单赋值-->提交表单
+this.$emit("input", file.response.data)
+```
+
+##### MrBrandForm.vue
+
+```js
+<template>
+  <div>
+    <v-card-text>
+      <v-form v-model="valid" ref="form">
+        <v-text-field
+          v-model="brand.name"
+          label="品牌名称"
+          :rules="nameRules"
+          required
+        ></v-text-field>
+
+        <v-cascader
+          url="/category/list"
+          required
+          v-model="brand.categories"
+          multiple
+          label="商品分类"
+        />
+
+        <v-layout row>
+          <v-flex xs3>
+            <span style="font-size: 16px; color: #444">品牌LOGO：</span>
+          </v-flex>
+          <v-flex>
+            <v-upload
+              v-model="brand.image"
+              url="/upload"
+              :multiple="false"
+              :pic-width="250"
+              :pic-height="90"
+            />
+          </v-flex>
+        </v-layout>
+      </v-form>
+    </v-card-text>
+
+    <v-divider></v-divider>
+
+    <v-card-actions>
+      <v-spacer></v-spacer>
+      <v-btn small @click="cancel()">取消</v-btn>
+      <v-btn small color="primary" @click="submitForm()">确认</v-btn>
+    </v-card-actions>
+  </div>
+</template>
+<script>
+export default {
+  name: "MrBrandForm",
+  props: {
+    dialog: Boolean,
+    brandDetail:Object,
+    isEdit:Boolean
+  },
+  watch: {
+    dialog(val) {
+      delete this.brand.id;
+      if (val) this.$refs.form.reset();
+    },
+    brandDetail (val) {
+      //控制是新增还是修改发生的数据变化
+      if(this.isEdit){
+        //回显数据
+        this.$http.get('/category/brand',{
+          params:{
+            brandId:val.id
+          }
+        }).then(resp => {
+          let brand = val;
+          brand.categories = resp.data.data;
+          this.brand = brand;
+        }).catch(error => console.log(error));
+
+      }
+    },
+    
+  },
+  data() {
+    //在js中 null == false , '' == false , undefined == false , 0 == false
+    return {
+      valid: true,
+      nameRules: [
+        (v) => !!v || "品牌名称不能为空",
+        (v) => (v && v.length <= 10) || "品牌名称最多10个长度",
+      ],
+      brand: {
+        name: "",
+        image:'',
+        categories: [],
+      },
+    };
+  },
+  methods: {
+    cancel() {
+      this.$emit("closeDialog");
+    },
+    submitForm() {
+      if (!this.$refs.form.validate()) {
+        return;
+      }
+      let formData = this.brand;
+      let categoryIdArr = this.brand.categories.map((category) => category.id);
+      formData.categories = categoryIdArr.join();
+
+      //$.ajax() 和 $.get() | $.post()方法的区别?
+      this.$http({
+        url:'/brand/save',
+        method:this.isEdit ? 'put' : 'post',
+        data:formData
+      }).then((resp) => {
+          if (resp.data.code != 200) {
+            return;
+          }
+          //关闭模态框
+          this.cancel();
+          //刷新表单
+
+        })
+        .catch((error) => console.log(error));
+    },
+  },
+};
+</script>
+```
+
+#####  在mingrui-shop-basics下新建mingrui-shop-basic-uploadserver
+
+pom.xml
+
+```java
+		<!-- SpringBoot-整合Web组件 -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-web</artifactId>
+            </dependency>
+            <dependency>
+                <groupId>com.baidu</groupId>
+                <artifactId>mingrui-shopcommon-core</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+```
+
+##### application.yml
+
+```java
+server:
+  port: 8200
+spring:
+  application:
+    name: upload-server
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+mingrui:
+  upload:
+    path:
+      windows: D:\\images
+      linux: /hxs/images
+    img:
+      host: http://81.70.218.5/
+```
+
+##### RunUploadServerApplication	启动类
+
+```java
+package com.baidu;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.EnableEurekaClient;
+
+/**
+ * @ClassName RunUploadServerApplication
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2020/12/29
+ * @Version V1.0
+ **/
+@SpringBootApplication
+@EnableEurekaClient
+public class RunUploadServerApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(RunUploadServerApplication.class);
+    }
+}
+```
+
+##### 新建包com.baidu.shop.upload.controller	在包下新建UploadController
+
+```java
+package com.baidu.shop.upload.controller;
+
+import com.baidu.shop.base.BaseApiService;
+import com.baidu.shop.base.Result;
+import com.baidu.shop.status.HTTPStatus;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.UUID;
+
+
+/**
+ * @ClassName UploadController
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2020/12/29
+ * @Version V1.0
+ **/
+@RestController
+@CrossOrigin(origins = "http://manage.mrshop.com")
+@RequestMapping(value = "upload")
+public class UploadController extends BaseApiService{
+    //linux系统的上传目录
+    @Value(value = "${mingrui.upload.path.windows}")
+    private String windowsPath;
+
+    //window系统的上传目录
+    @Value(value = "${mingrui.upload.path.linux}")
+    private String linuxPath;
+
+    @Value(value = "${mingrui.upload.img.host}")
+    private String imageHost;
+
+    @PostMapping
+    public Result<String> uploadImg(@RequestParam MultipartFile file) {
+
+        if(file.isEmpty()) return this.setResultError("上传的文件为空");//判断上传的文件是否为空
+
+        String filename = file.getOriginalFilename();//获取文件名
+
+        //String path = "";
+        String os = System.getProperty("os.name").toLowerCase();
+        String path = os.indexOf("win") != -1 ? windowsPath : os.indexOf("lin") != -1 ? linuxPath : "";
+//        if(os.indexOf("win") != -1){
+//            path = windowsPath;
+//        }else if(os.indexOf("lin") != -1){
+//            path = linuxPath;
+//        }
+
+        //UUID.randomUUID() + 1.jpg UUID.randomUUID() + 1.jpg
+        filename = UUID.randomUUID() + filename;//防止文件名重复
+
+        //创建文件 路径+分隔符(linux和window的目录分隔符不一样)+文件名
+        File dest = new File(path + File.separator + filename);
+
+        //判断文件夹是否存在,不存在的话就创建
+        if(!dest.getParentFile().exists()) dest.getParentFile().mkdirs();
+
+        try {
+            file.transferTo(dest);//上传
+        } catch (IllegalStateException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        } catch (IOException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+
+        return this.setResult(HTTPStatus.OK,"upload success!!!",imageHost + "/" + filename);//将文件名返回页面用于页面回显
+    }
+}
+```
+
+##### 新建包:com.baidu.global	GlobalCorsConfig	用来处理跨域
+
+也可以在Controller加上注解@CrossOrigin(origins = "http://manage.mrshop.com")
+
+```java
+package com.baidu.global;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
+
+/**
+ * @ClassName GlobalCorsConfig
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2020/12/29
+ * @Version V1.0
+ **/
+@Configuration
+public class GlobalCorsConfig {
+    @Bean
+    public CorsFilter corsFilter() {
+        final UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        final CorsConfiguration config = new CorsConfiguration();
+        config.setAllowCredentials(true); // 允许cookies跨域
+        config.addAllowedOrigin("*");// 允许向该服务器提交请求的URI，*表示全部允许。。这里尽量限制来源域，比如http://xxxx:8080 ,以降低安全风险。。
+        config.addAllowedHeader("*");// 允许访问的头信息,*表示全部
+        config.setMaxAge(18000L);// 预检请求的缓存时间（秒），即在这个时间段里，对于相同的跨域请求不会再预检了
+        config.addAllowedMethod("*");// 允许提交请求的方法，*表示全部允许，也可以单独设置GET、PUT等
+        config.addAllowedMethod("HEAD");
+        config.addAllowedMethod("GET");// 允许Get的请求方法
+        config.addAllowedMethod("PUT");
+        config.addAllowedMethod("POST");
+        config.addAllowedMethod("DELETE");
+        config.addAllowedMethod("PATCH");
+        source.registerCorsConfiguration("/**", config);
+        //3.返回新的CorsFilter.
+        return new CorsFilter(source);
+    }
+}
+
+```
+
+##### 使用postman测试上传
+
+![image-20210106080821154](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106080821154.png)
+
+#### 为什么需要在将图片放在本地目录?
+
+如果将图片放在项目目录的话,前台对项目的访问量就会非常的大,造成了没有必要的服务器压力
+
+####  将图片放在本地目录浏览器还可以访问吗?
+
+不可以
+
+#### 我们将利用nginx来做代理服务,代理本地目录
+
+##### hosts文件中新增
+
+```
+127.0.0.1 image.mrshop.com
+```
+
+##### nginx-home/conf/nginx.conf新增
+
+```
+	server {
+		listen 80;
+		server_name image.mrshop.com;
+		proxy_set_header X-Forwarded-Host $host;
+		proxy_set_header X-Forwarded-Server $host;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		location ~ .*\.(gif|jpg|pdf|jpeg|png)$
+		{
+	
+		root D:\images;
+		}
+		location / {
+		root html;
+		index index.html index.htm;
+		}
+	}
+```
+
+##### 重启nginx
+
+```
+nginx.exe -s reload
+```
+
+##### 浏览器输入返回的参数进行测试
+
+#####  启动vue项目测试能否成功
+
+不能成功,还是请求了网关,网关会吧api-xxx的请求转发到service-xxx的服务中,而service-xxx并没有 upload服务
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106081544737.png" alt="image-20210106081544737" style="zoom:50%;" />
+
+所以我想只要包含/upload请求的我都不进行路由
+
+##### zuul的application.yml
+
+```java
+zuul:
+  # 声明路由
+  routes:
+    # 路由名称
+    api-xxx:
+      # 声明将所有以/api-ribbon/的请求都转发到eureka-ribbon的服务中
+      path: /api-xxx/**
+      serviceId: xxx-server
+  # 启用重试
+  retryable: true
+  # 包含此路径的不进行路由
+  ignored-patterns: /upload/**
+  # 忽略上传服务
+  ignored-services:
+     -upload-server
+```
+
+重启zuul服务测试,还是不行,为什么?因为这个配置没有从根本上去解决问题,虽然忽略了/upload的请求,但是/上传的请求中依然包含/api-xxx
+
+所以我们需要借助nginx来帮助我们做一些事:
+
+只要包含/api-xxx/upload的请求都将/api-xxx去掉,
+
+为什么是在nginx里面处理?
+
+因为浏览器发起请求的时候第一个经过nginx服务
+
+##### 在nginx-home/conf/nginx.conf 添加api.mrshop.com的代理配置
+
+```
+	server {
+			listen 80;
+			server_name api.mrshop.com;
+			
+			proxy_set_header X-Forwarded-Host $host;
+			proxy_set_header X-Forwarded-Server $host;
+			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+			
+			location / {
+			proxy_pass http://127.0.0.1:8088;
+			proxy_connect_timeout 600;
+			proxy_read_timeout 600;
+			}
+			
+			# 上传路径的映射
+			# 只要包含/api-xxx/upload 都会把请求映射到8200服务
+			# rewrite "^/api-xxx/(.*)$" /$1 break;
+			# 将/api-xxx 替换成/
+			location /api-xxx/upload {
+				proxy_pass http://127.0.0.1:8200;
+				proxy_connect_timeout 600;
+				proxy_read_timeout 600;
+				rewrite "^/api-xxx/(.*)$" /$1 break;
+			}
+
+		}
+```
+
+##### 重启nginx
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106081805192.png" alt="image-20210106081805192" style="zoom:80%;" />
+
+
+
+
+
+# 使用FastDFS做上传
+
+
+
+## 1.centos下安装fastDFS
+
+解压fastDFS压缩包.得到压缩文件
+
+![image-20210105111448801](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105111448801.png)
+
+在linux系统中自己的目录下新建fastDFS目录
+
+```
+mkdir fastDFS
+```
+
+![image-20210105111524817](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105111524817.png)
+
+进入fastDFS目录
+
+```
+cd fastDFS/
+```
+
+将刚刚解压得到的压缩包全部上传到此文件内
+
+![image-20210105111739848](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105111739848.png)
+
+## 2.安装C/C++ 编译环境
+
+```
+yum -y install gcc gcc-c++ autoconf pcre pcre-devel make automake
+```
+
+## 3.安装libevent
+
+```
+yum -y install libevent
+```
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105112140134.png" alt="image-20210105112140134" style="zoom:80%;" />
+
+## 4.安装 libfastcommon
+
+```
+tar -xvf libfastcommon-master.tar #解压压缩包
+cd libfastcommon-master/ #进入目录
+./make.sh #编译
+```
+
+![image-20210105112259923](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105112259923.png)
+
+```
+./make.sh install #安装
+cp /usr/lib64/libfastcommon.so /usr/lib #复制镜像
+```
+
+![image-20210105112427631](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105112427631.png)
+
+## 5.安装FastDFS
+
+```
+cd .. #进入fastDFS目录
+tar -zxvf FastDFS_v5.08.tar.gz #解压压缩包
+cd FastDFS/ #进入目录
+./make.sh #编译
+./make.sh install #安装
+```
+
+## 6.启动tracker
+
+```
+cd /etc/fdfs #进入fastDFS配置目录
+cp tracker.conf.sample tracker.conf #复制文件
+vi tracker.conf #编辑刚刚复制的配置文件
+```
+
+修改配置
+
+```
+base_path=/shop/fdfs/tracker
+```
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105112902603.png" alt="image-20210105112902603" style="zoom:80%;" />
+
+保存退出
+
+Esc --> :wq
+
+创建刚刚设置的目录
+
+```
+mkdir -p /shop/fdfs/tracker
+```
+
+启动tracker
+
+```
+service fdfs_trackerd start #停止换成stop
+```
+
+![image-20210105113156647](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113156647.png)
+
+## 7.启动storage
+
+```
+cp storage.conf.sample storage.conf
+vi storage.conf
+```
+
+修改配置
+
+```
+base_path=/shop/fdfs/storage
+store_path0=/shop/fdfs/storage
+tracker_server=本机ip地址:22122 #注意不能写localhost,需要写ip地址
+```
+
+![image-20210105113458335](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113458335.png)
+
+![image-20210105113557791](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113557791.png)
+
+![image-20210105113703016](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113703016.png)
+
+保存退出
+
+Esc --> :wq
+
+创建刚刚设置的目录
+
+```
+mkdir -p /shop/fdfs/storage
+```
+
+启动storage
+
+```
+service fdfs_storaged start
+```
+
+![image-20210105113812168](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113812168.png)
+
+查看进程
+
+```
+ps -ef | grep fdfs
+```
+
+![image-20210105113851912](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105113851912.png)
+
+## 8.安装FastDFS的Nginx模块
+
+进入压缩包所在的目录
+
+![image-20210105114011065](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114011065.png)
+
+```
+tar -zxvf fastdfs-nginx-module_v1.16.tar.gz #解压压缩包
+cd fastdfs-nginx-module/src/ #进入目录
+vi config
+//直接输入下面的命令,注意冒号需要手敲
+: --> %s+/usr/local/+/usr/+g --> enter --> esc --> :wq --> enter
+```
+
+保存退出	Esc --> :wq
+
+```
+cp mod_fastdfs.conf /etc/fdfs/ #复制文件
+vi /etc/fdfs/mod_fastdfs.conf
+```
+
+修改默认配置
+
+```
+connect_timeout=10
+tracker_server=本机ip地址:22122 #不能写localhost
+url_have_group_name = true
+store_path0=/shop/fdfs/storage
+```
+
+![image-20210105114419782](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114419782.png)
+
+![image-20210105114515063](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114515063.png)
+
+![image-20210105114645529](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114645529.png)
+
+![image-20210105114633591](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114633591.png)
+
+退出保存 Esc --> :wq
+
+进入FastDFS/conf目录
+
+![image-20210105114835313](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114835313.png)
+
+```
+cp http.conf mime.types /etc/fdfs/ #复制文件
+```
+
+## 9.安装Nginx
+
+进入压缩包所在的目录
+
+![image-20210105114924805](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105114924805.png)
+
+```
+tar -zxvf nginx-1.10.0.tar.gz #解压压缩包
+yum -y install make zlib-devel libtool openssl openssl-devel #安装依赖
+cd nginx-1.10.0/
+./configure --prefix=/opt/nginx --sbin-path=/usr/bin/nginx --add-module=/hxs/fastDFS/fastdfs-nginx-module/src
+```
+
+注意:
+
+--prefix= --> nginx配置文件所在目录
+
+--sbin-path= --> 执行程序文件所在目录
+
+--add-module= -->外部模块路径，启用对外部模块的支持 这个路径一定不能配置错,就写你自己 fastdfs-nginx-module的目录即可
+
+```
+make && make install #编译并安装
+```
+
+![image-20210105115744966](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105115744966.png)
+
+编辑nginx的配置文件
+
+```
+vi /opt/nginx/conf/nginx.conf
+```
+
+erver的配置
+
+```
+listen 80;
+    server_name localhost:8888;#storage的端口号
+    # 监听域名中带有group的，交给FastDFS模块处理
+    location ~/group([0-9])/ {
+    	ngx_fastdfs_module;
+    }
+
+```
+
+保存退出 Esc --> :wq
+
+```
+cd /opt/nginx #nginx主目录
+```
+
+![image-20210105120219304](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105120219304.png)
+
+启动nginx
+
+```
+nginx
+nginx -s stop #停止
+nginx -s reload #重新加载配置
+```
+
+![image-20210105120300980](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105120300980.png)
+
+需要启动三个
+
+```
+在FastDFS下执行
+service fdfs_trackerd start
+service fdfs_storaged start
+在/opt/nginx/执行
+nginx
+```
+
+浏览器访问ip地址
+
+![image-20210105120345102](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105120345102.png)
+
+##### 安装成功后
+
+# java上传文件到fastDFS服务
+
+##### pom.xml
+
+```java
+<dependency>
+    <groupId>com.github.tobato</groupId>
+    <artifactId>fastdfs-client</artifactId>
+    <version>1.26.1-RELEASE</version>
+</dependency>
+```
+
+#####  application.yml
+
+```java
+fdfs:
+  so-timeout: 1501
+  connect-timeout: 601
+  thumb-image: # 缩略图
+    width: 60
+    height: 60
+  tracker-list: # tracker地址
+    - 81.70.218.5:22122
+mingrui:
+  upload:
+    path:
+      windows: D:\\images
+      linux: /hxs/images
+    img:
+      host: http://81.70.218.5/
+```
+
+#####  config包下新建配置类FastClientImporter
+
+```java
+package com.baidu.config;
+
+import com.github.tobato.fastdfs.FdfsClientConfig;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.EnableMBeanExport;
+import org.springframework.context.annotation.Import;
+import org.springframework.jmx.support.RegistrationPolicy;
+
+/**
+ * @ClassName FastClientImporter
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+@Configuration
+@Import(FdfsClientConfig.class)
+@EnableMBeanExport(registration = RegistrationPolicy.IGNORE_EXISTING)
+public class FastClientImporter {
+}
+```
+
+
+
+##### 上传文件controller
+
+```java
+package com.baidu.shop.upload.controller;
+
+import com.baidu.shop.base.Result;
+import com.baidu.shop.status.HTTPStatus;
+import com.github.tobato.fastdfs.domain.StorePath;
+import com.github.tobato.fastdfs.domain.ThumbImageConfig;
+import com.github.tobato.fastdfs.service.FastFileStorageClient;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.IOException;
+import java.io.InputStream;
+
+/**
+ * @ClassName FastDFSUploadController
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+@RestController
+@RequestMapping(value = "upload")
+@CrossOrigin(origins = "http://manage.mrshop.com")
+@Slf4j
+public class FastDFSUploadController {
+    //图片服务器的地址
+    @Value(value = "${mingrui.upload.img.host}")
+    private String imgHost;
+    @Autowired
+    private FastFileStorageClient storageClient;
+    @Autowired
+    private ThumbImageConfig thumbImageConfig;
+    @PostMapping
+    public Result<String> uploadImg(@RequestParam MultipartFile file) throws IOException {
+        InputStream inputStream = file.getInputStream();//获取文件输入流
+        String filename = file.getOriginalFilename();//文件名
+        String ex = filename.substring(filename.lastIndexOf(".") + 1);//文件后缀名
+        // 上传并且生成缩略图
+        StorePath storePath = this.storageClient.uploadImageAndCrtThumbImage(inputStream, file.getSize(), ex, null);//上传
+        // 带分组的路径
+        log.info("上传图片全路径:{}", storePath.getFullPath());
+        // 不带分组的路径
+        log.info("上传图片路径:{}", storePath.getPath());
+        // 获取缩略图路径
+        String path = thumbImageConfig.getThumbImagePath(storePath.getFullPath());
+        log.info("缩略图路径:{}", path);
+        return new Result<String>(HTTPStatus.OK,"上传成功",imgHost + path);
+    }
+}
+```
+
+##### postman测试上传图片
+
+# Category的增删改查
+
+## 查询
+
+CategoryEntity
+
+```java
+package com.baidu.shop.entity;
+
+import com.baidu.shop.validate.group.MingruiOperation;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
+
+import javax.persistence.Id;
+import javax.persistence.Table;
+import javax.validation.constraints.NotEmpty;
+import javax.validation.constraints.NotNull;
+import java.io.Serializable;
+
+/**
+ * @ClassName CategoryEntity
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2020/12/22
+ * @Version V1.0
+ **/
+@ApiModel(value = "分类实体类")
+@Data
+@Table(name = "tb_category")
+public class CategoryEntity {
+
+    @Id
+    @ApiModelProperty(value = "类目id",example = "1")
+    @NotNull(message = "id不能为空",groups = {MingruiOperation.Update.class})
+    private Integer id;
+
+    @ApiModelProperty(value = "类目名称")
+    @NotEmpty(message = "name不能为空",groups = {MingruiOperation.Add.class,MingruiOperation.Update.class})
+    private String name;
+
+    @ApiModelProperty(value = "父类目id,顶级类目填0",example = "1")
+    @NotNull(message = "父类id不能为空",groups = {MingruiOperation.Add.class,MingruiOperation.Update.class})
+    private Integer parentId;
+
+    @ApiModelProperty(value = "是否为父节点,0为否,1为是",example = "1")
+    @NotNull(message = "状态不能为空",groups = {MingruiOperation.Add.class})
+    private Integer isParent;
+
+    @ApiModelProperty(value = "排序指数,越小越靠前",example = "1")
+    @NotNull(message = "排序值不能为空",groups = {MingruiOperation.Add.class})
+    private Integer sort;
+}
+```
+
+CategoryService
+
+```java
+	ApiOperation(value = "通过查询商品分类")
+    @GetMapping(value = "category/list")
+    Result<List<CategoryEntity>> getCategoryByPid(Integer pid);
+```
+
+类别管理的查询出来是有前台进行处理的不需要后台分页
+
+前台树状图默认传parentId为0是从父类查询 也就是查询全部
+
+用list接收数据,用this.setResultSuccess(list);传给前台
+
+```java
+@Override//查询
+    public Result<List<CategoryEntity>> getCategoryByPid(Integer pid) {
+        CategoryEntity categoryEntity = new CategoryEntity();
+        categoryEntity.setParentId(pid);
+        List<CategoryEntity>list = categoryMapper.select(categoryEntity);
+        return this.setResultSuccess(list);//调用返回成功方法,传list
+    }
+```
+
+
+
+## 新增
+
+CategoryService
+
+```java
+    @ApiOperation(value = "新增")
+    @PostMapping(value = "category/save")
+    Result<Object>saveCategory(@RequestBody CategoryEntity categoryEntity);
+```
+
+Category查询出来是树状图的,有父子叶结构,要在某个节点下添加一个子节点,那么改节点必须是父节点状态( Is_Parent字段控制着节点状态,1为父节点状态,0为子节点状态也就是在它下面没有叶节点 )
+
+所以第一步就是把改数据的IsParent设置为1
+
+前台点击新增会传来一个 name="新的节点"	parentId为点击创建节点id 的一个数据
+
+new一个新的对象,把id设置为parentId,isParent设置为1,进行父类状态的修改
+
+然后新增数据传来的数据
+
+![image-20201231112525275](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20201231112525275.png)
+
+```java
+    @Transactional//事务
+    @Override//新增
+    public Result<Object> saveCategory(CategoryEntity categoryEntity) {
+//        if (categoryEntity.getIsParent() != 1){
+//            CategoryEntity cate = new CategoryEntity();
+//            cate.setIsParent(1);
+//            categoryMapper.updateByPrimaryKeySelective(cate);
+//        }
+
+        CategoryEntity cate = new CategoryEntity();
+        cate.setId(categoryEntity.getParentId());
+        cate.setIsParent(1);
+        categoryMapper.updateByPrimaryKeySelective(cate);
+
+        categoryMapper.insertSelective(categoryEntity);
+        return this.setResultSuccess();//调用返回成功方法,不用传参数
+    }
+```
+
+## 修改
+
+CategoryService
+
+```java
+    @ApiOperation(value = "修改")
+    @PutMapping(value = "category/edit")
+    Result<Object>editCategory(@RequestBody CategoryEntity categoryEntity);
+```
+
+Category的修改没有涉及到过多的其他因素,只需要修改本身就可以
+
+```java
+    @Transactional
+    @Override//修改
+    public Result<Object> editCategory(CategoryEntity categoryEntity) {
+        categoryMapper.updateByPrimaryKeySelective(categoryEntity);
+        return this.setResultSuccess();//调用返回成功方法,不用传参数
+    }
+```
+
+## 删除
+
+CategoryService
+
+```java
+    @ApiOperation(value = "删除")
+    @DeleteMapping(value = "category/del")
+    Result<Object>deleteById(Integer id);
+```
+
+Category的删除
+
+1.判断接收id是否合法,id不能为0,因为Category表id没有0,更不能小于0,id不能为null,调用返回错误信息方法
+
+2.考虑到一个问题,如果你现在删除的是某个父节点的最后一个子节点,那么这个子节点的父节点的状态应该调整为子节点状态也就是IsParent要修改为0
+
+所以要根据接收的id查询一条完整的数据!!
+
+3.查询出一条数据用对象接收,判断改对象是否存在,如果不存在调用返回错误信息方法
+
+4.再判断对象的IsParent是否为1,为1是父节点,不能被直接删除,所以调用返回错误信息方法
+
+5.我们要查询出来跟他同级节点的数据,利用ParentId,用list集合接收
+
+6.判断
+
+如果list的长度<=1 满足条件就可以修改父类的状态了,因为长度=1的时候,最后这条数据就是要删除的自己
+
+new一个对象,把IsParent设置为0,id设置为上面对象的ParentId,进行修改操作
+
+7.删除传来的id的数据
+
+```jva
+    public Result<Object> deleteById(Integer id) {
+        //判断前台传来的id是否合法
+            if (null == id || id<= 0) return this.setResultError("id不合法");
+        //根据id查询一条数据
+        CategoryEntity categoryEntity = categoryMapper.selectByPrimaryKey(id);
+        //判断查询一条数据是否存在
+        if (null == categoryEntity) return  this.setResultError("数据不存在");
+        //根据查询的数据的 判断isid是否为1 1为父节点不能删除
+        if (categoryEntity.getIsParent() == 1) return this.setResultError("当前节点为父节点");
+
+        Example example = new Example(categoryEntity.getClass());
+        example.createCriteria().andEqualTo("parentId",categoryEntity.getParentId());
+        List<CategoryEntity>categoryEntityList = categoryMapper.selectByExample(example);
+
+        if (categoryEntityList.size() <= 1){
+            CategoryEntity UpdateCategory = new CategoryEntity();
+            UpdateCategory.setIsParent(0);
+            UpdateCategory.setId(categoryEntity.getParentId());
+            categoryMapper.updateByPrimaryKeySelective(UpdateCategory);
+        }
+
+        categoryMapper.deleteByPrimaryKey(id);
+        return this.setResultSuccess();
+    }
+```
+
+# Brand的增删改查
+
+## 查询
+
+### 前台
+
+在item中新建Mrbrand.vue
+
+```vue
+<template>
+  <v-card>
+    <v-card-title>
+      <v-btn color="info">新增</v-btn>
+      <!-- 调按钮和输入框之间的间距 -->
+      <v-spacer />
+      <!--
+            append-icon : 图标
+            label : input默认值
+        -->
+      <v-text-field
+        append-icon="search"
+        label="品牌名称"
+        @keyup.enter="getTableData()"
+        v-model="search"
+      ></v-text-field>
+    </v-card-title>
+    <!-- 表格组件 -->
+        <!-- :pagination.sync="pagination" 绑定分页属性,并将分页参数绑定给data.pagination
+        -->
+        <!-- :total-items="total" 设置总条数,获取data.total中的值 -->
+    <v-data-table
+      :headers="headers"
+      :items="desserts"
+      :pagination.sync="pagination"
+      :total-items="total"
+      class="elevation-1"
+    >
+      <template slot="items" slot-scope="props">
+        <td class="text-xs-center">{{ props.item.id }}</td>
+        <td class="text-xs-center">{{ props.item.name }}</td>
+        <td class="text-xs-center">
+          <!-- src 是html标签的属性 :src="vue的属性" -->
+          <img :src="props.item.image" />
+        </td>
+        <td class="text-xs-center">{{ props.item.letter }}</td>
+      </template>
+    </v-data-table>
+  </v-card>
+</template>
+<script>
+export default {
+  name: "MrBrand",//组件的名称
+  data() {
+    return {
+      pagination: {},//分页参数信息
+      total: 0,//总条数,初始值为0
+      search: "",
+      headers: [
+        {
+          text: "id",
+          align: "center",
+          value: "id",
+        },
+        {
+          text: "品牌名称",
+          align: "center",
+          value: "name",
+        },
+        {
+          text: "品牌logo",
+          align: "center",
+          value: "image",
+        },
+        {
+          text: "首字母",
+          align: "center",
+          value: "letter",
+        },
+      ],
+      desserts: [],//数据
+    };
+  },
+    //组件加载完毕后执行的方法
+  mounted() {
+    this.getTableData();//查询方法,刷新列表
+  },
+  methods: {
+    getTableData() {
+      this.$http
+        .get("/brand/list", {
+          //查询传递的参数
+          params: {
+            page: this.pagination.page,
+            rows: this.pagination.rowsPerPage,
+            sort: this.pagination.sortBy,
+            order: this.pagination.descending,
+            name: this.search
+          },
+        })
+        .then((resp) => {
+          //给数据属性赋值
+          this.desserts = resp.data.data.list;
+          //给总条数赋值
+          this.total = resp.data.data.total;
+        })
+        .catch((error) => console.log(error));
+    }
+  },
+  watch: {//监控属性
+    pagination() {//监控分页属性的变化
+      this.getTableData();//刷新列表
+    }
+  }
+};
+</script>
+```
+
+更改index.js 27行
+
+```vue
+route("/item/brand",'/item/MrBrand',"MrBrand"),
+```
+
+### 后台
+
+品牌管理需要分页,先在pom.cml写分页工具的依赖
+
+```
+		<!--分页工具-->
+        <dependency>
+            <groupId>com.github.pagehelper</groupId>
+            <artifactId>pagehelper-spring-boot-starter</artifactId>
+            <version>1.2.10</version>
+        </dependency>
+        <dependency>
+            <groupId>com.baidu</groupId>
+            <artifactId>mingrui-shopservice-api-xxx</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+```
+
+然后在实现层方法里调用,完成分页
+
+```java
+//调用分页插件
+//brandDTO中继承了baseDTO,page为当前页数,rows为每页显示多少条
+PageHelper.startPage(brandDTO.getPage(),brandDTO.getRows());
+```
+
+给字段排序
+
+```java
+		//如果sort(排序字段)不为空
+		if (!StringUtils.isEmpty(brandDTO.getSort())){
+			//调用排序 orderBy里面参数控制了升序降序
+            PageHelper.orderBy(brandDTO.getOrderBy());
+        }
+```
+
+根据name模糊查询
+
+```java
+		//因为继承的Mapper的泛型是BrandEntity,所以要转一下
+		BrandEntity brandEntity = BaiduBeanUtil.copyProperties(brandDTO,BrandEntity.class);
+        Example example = new Example(BrandEntity.class);
+        example.createCriteria().andLike("name","%"+ brandEntity.getName() +"%");
+```
+
+```java
+    @Override
+    public Result<PageInfo<BrandEntity>> getBrandInfo(BrandDTO brandDTO) {
+        //分页插件
+        PageHelper.startPage(brandDTO.getPage(),brandDTO.getRows());
+
+        if (!StringUtils.isEmpty(brandDTO.getSort())){
+            PageHelper.orderBy(brandDTO.getOrderBy());
+        }
+
+        BrandEntity brandEntity = BaiduBeanUtil.copyProperties(brandDTO,BrandEntity.class);
+
+        Example example = new Example(BrandEntity.class);
+        example.createCriteria().andLike("name","%"+ brandEntity.getName() +"%");
+		
+        List<BrandEntity> brandEntityList = brandMapper.selectByExample(example);
+        //实例化pageInfo,把查询到的集合放到pageInfo里面,返回给vue
+        PageInfo<BrandEntity> pageInfo = new PageInfo<>(brandEntityList);
+        return this.setResultSuccess(pageInfo);
+    }
+```
+
+## 新增
+
+### 前台
+
+新建MrBrandForm.vue
+
+```vue
+<template>
+  <div>
+    <v-card-text>
+      <v-form v-model="valid" ref="form">
+        <v-text-field
+          v-model="brand.name"
+          label="品牌名称"
+          :rules="nameRules"
+          required
+        ></v-text-field>
+		//查询分类信息
+        <v-cascader
+          url="/category/list"
+          required
+          v-model="brand.categories"
+          multiple
+          label="商品分类"
+        />
+
+        <v-layout row>
+          <v-flex xs3>
+            <span style="font-size: 16px; color: #444">品牌LOGO：</span>
+          </v-flex>
+          <v-flex>
+            <v-upload
+              v-model="brand.image"
+              url="/upload"
+              :multiple="false"
+              :pic-width="250"
+              :pic-height="90"
+            />
+          </v-flex>
+        </v-layout>
+      </v-form>
+    </v-card-text>
+
+    <v-divider></v-divider>
+
+    <v-card-actions>
+      <v-spacer></v-spacer>
+      <v-btn small @click="cancel()">取消</v-btn>
+      <v-btn small color="primary" @click="submitForm()">确认</v-btn>
+    </v-card-actions>
+  </div>
+</template>
+<script>
+export default {
+  name: "MrBrandForm",
+  props: {
+    dialog: Boolean,//模态框状态设置为boolean类型
+  },
+  watch: {
+    dialog(val) {
+      if (val) this.$refs.form.reset();
+    },
+  },
+  data() {
+    //在js中 null == false , '' == false , undefined == false , 0 == false
+    return {
+      valid: true,
+      nameRules: [
+        (v) => !!v || "品牌名称不能为空",
+        (v) => (v && v.length <= 10) || "品牌名称最多10个长度",
+      ],
+      brand: {
+        name: "",
+        image:'',
+        categories: [],
+      },
+    };
+  },
+  methods: {
+    cancel() {
+      this.$emit("closeDialog");
+    },
+    submitForm() {
+      if (!this.$refs.form.validate()) {
+        return;
+      }
+      let formData = this.brand;
+      let categoryIdArr = this.brand.categories.map((category) => category.id);
+      formData.categories = categoryIdArr.join();
+
+      this.$http
+        .post("/brand/save", formData)
+        .then((resp) => {
+          if (resp.data.code != 200) {
+            return;
+          }
+          //关闭模态框
+          this.cancel();
+          //刷新表单
+        })
+        .catch((error) => console.log(error));
+    },
+  },
+};
+</script>
+```
+
+在MrBrand中添加新增属性
+
+```vue
+<template>
+  <v-card>
+    <v-card-title>
+      <v-btn color="info" @click="dialog = true">新增</v-btn>//点击新增按钮打开模态框
+
+      <div class="text-xs-center">
+    <v-dialog
+      v-model="dialog"
+      width="500"
+    >
+      <v-card>
+        <v-card-title
+          class="headline grey lighten-2"
+          primary-title
+        >
+          品牌新增
+        </v-card-title>
+
+        <mr-brand-form @closeDialog="dialog = false" :dialog="dialog"/>
+
+      </v-card>
+    </v-dialog>
+  </div>
+
+      <!-- 调按钮和输入框之间的间距 -->
+      <v-spacer />
+
+      <!--
+            append-icon : 图标
+            label : input默认值
+        -->
+      <v-text-field
+        append-icon="search"
+        label="品牌名称"
+        @keyup.enter="getTableData()"
+        v-model="search"
+      ></v-text-field>
+    </v-card-title>
+    <!-- 表格组件 -->
+    <v-data-table
+      :headers="headers"
+      :items="desserts"
+      :pagination.sync="pagination"
+      :total-items="total"
+      class="elevation-1"
+    >
+      <template slot="items" slot-scope="props">
+        <td class="text-xs-center">{{ props.item.id }}</td>
+        <td class="text-xs-center">{{ props.item.name }}</td>
+        <td class="text-xs-center">
+          <!-- src 是html标签的属性 :src="vue的属性" -->
+          <img :src="props.item.image" />
+        </td>
+        <td class="text-xs-center">{{ props.item.letter }}</td>
+      </template>
+    </v-data-table>
+  </v-card>
+</template>
+<script>
+import MrBrandForm from './MrBrandForm';
+export default {
+  name: "MrBrand",
+  components:{
+    MrBrandForm
+  },
+  data() {
+    return {
+      pagination: {},
+      dialog: false,
+      total: 0,
+      search: "",
+      headers: [
+        {
+          text: "id",
+          align: "center",
+          value: "id",
+        },
+        {
+          text: "品牌名称",
+          align: "center",
+          value: "name",
+        },
+        {
+          text: "品牌logo",
+          align: "center",
+          value: "image",
+        },
+        {
+          text: "首字母",
+          align: "center",
+          value: "letter",
+        },
+      ],
+      desserts: [],
+    };
+  },
+  mounted() {
+    this.getTableData();
+  },
+  methods: {
+    getTableData() {
+
+      this.$http
+        .get("/brand/list", {
+          params: {
+            page: this.pagination.page,
+            rows: this.pagination.rowsPerPage,
+            sort: this.pagination.sortBy,
+            order: this.pagination.descending,
+            name: this.search
+          },
+        })
+        .then((resp) => {
+          this.desserts = resp.data.data.list;
+          this.total = resp.data.data.total;
+        })
+        .catch((error) => console.log(error));
+    }
+  },
+  watch: {
+    pagination() {
+      this.getTableData();
+    }
+  }
+};
+</script>
+```
+
+### 后台
+
+新增时,需要有让 首字母 自动补上的操作
+
+复制一个PinYInUtil工具包,设置letter(首字母),调用工具包中的getUpperCase方法
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210104221252695.png" alt="image-20210104221252695" style="zoom: 67%;" />
+
+String.valueof 把对象转为String类型 (把name值传进去,把它转为字符串类型,截取[0],就是首字母) 就得到了一个string类型的首字母
+
+再把这个首字母转成char类型,因为数据库是char类型
+
+```java
+brandEntity.setLetter(PinYinUtil.getUpperCase(String.valueOf(brandEntity.getName().toCharArray()[0]),false).toCharArray()[0]);
+```
+
+设置好数据的首字母后	完成新增
+
+```java
+brandMapper.insertSelective(brandEntity);
+```
+
+接下来要把商品分类信息新增到中间表 tb_category_brand 内,需要应对可能是多个分类信息进行处理
+
+```java
+    @Transactional//事务
+    @Override
+    public Result<JsonObject> saveBrandInfo(BrandDTO brandDTO) {
+        //因为继承的Mapper的泛型是BrandEntity,所以要转一下
+        BrandEntity brandEntity = BaiduBeanUtil.copyProperties(brandDTO, BrandEntity.class);
+        
+        brandEntity.setLetter(PinYinUtil.getUpperCase(String.valueOf(brandEntity.getName().toCharArray()[0]),false).toCharArray()[0]);
+
+        brandMapper.insertSelective(brandEntity);
+
+       this.insertCategoryBrandList(brandDTO.getCategories(),brandEntity.getId());
+        /*
+        //获取传来商品信息
+		String categories = brandDTO.getCategories();
+		//判断传来的商品信息是否为空,为空返回Error
+        if (StringUtils.isEmpty(brandDTO.getCategories()))return this.setResultError("");
+
+        List<CategoryBrandEntity> categoryBrandEntities = new ArrayList<>();
+
+		//如果包含","	表示有多个商品信息需要写入中间表
+        if (categories.contains(",")){
+            //以","分隔,放入String[]数组中
+            String[] categoryArr = categories.split(",");
+
+            //遍历数组
+            for (String s : categoryArr){
+                //实例化一个中间表实体类对象
+                CategoryBrandEntity categoryBrandEntity = new CategoryBrandEntity();
+
+                //把传来的id设置成BrandId
+                categoryBrandEntity.setBrandId(brandEntity.getId());
+                //把需要绑定商品信息id设置成ategoryId
+                categoryBrandEntity.setCategoryId(Integer.valueOf(s));
+                //把对象add到list数组categoryBrandEntities中
+                categoryBrandEntities.add(categoryBrandEntity);
+            }
+            //新增中间表数据
+            cateoryBrandMapper.insertList(categoryBrandEntities);
+        }else{
+            CategoryBrandEntity categoryBrandEntity = new CategoryBrandEntity();
+            categoryBrandEntity.setBrandId(brandEntity.getId());
+            categoryBrandEntity.setCategoryId(Integer.valueOf(categories));
+
+            categoryBrandMapper.insert(categoryBrandEntity);
+        }
+        */
+        return this.setResultSuccess();
+    }
+```
+
+## 修改
+
+```vue
+<template>
+  <v-card>
+    <v-card-title>
+      <v-btn color="info" @click="addData()">新增</v-btn>
+
+      <div class="text-xs-center">
+        <v-dialog v-model="dialog" width="500">
+          <v-card>
+            <v-card-title class="headline grey lighten-2" primary-title>
+              品牌{{ isEdit?'修改':'新增' }}
+            </v-card-title>
+
+            <mr-brand-form @closeDialog="closeDialog" :dialog="dialog" :isEdit="isEdit" :brandDetail="brandDetail" />
+          </v-card>
+        </v-dialog>
+      </div>
+
+      <!-- 调按钮和输入框之间的间距 -->
+      <v-spacer />
+
+      <!--
+            append-icon : 图标
+            label : input默认值
+        -->
+      <v-text-field
+        append-icon="search"
+        label="品牌名称"
+        @keyup.enter="getTableData()"
+        v-model="search"
+      ></v-text-field>
+    </v-card-title>
+    <!-- 表格组件 -->
+    <v-data-table
+      :headers="headers"
+      :items="desserts"
+      :pagination.sync="pagination"
+      :total-items="total"
+      class="elevation-1"
+    >
+      <template slot="items" slot-scope="props">
+        <td class="text-xs-center">{{ props.item.id }}</td>
+        <td class="text-xs-center">{{ props.item.name }}</td>
+        <td class="text-xs-center">
+          <!-- src 是html标签的属性 :src="vue的属性" -->
+          <img width="100" :src="props.item.image" />
+        </td>
+        <td class="text-xs-center">{{ props.item.letter }}</td>
+        <td class="text-xs-center">
+          <v-btn flat icon color="green" @click="editData(props.item)">
+            <v-icon>edit</v-icon>
+          </v-btn>
+          <v-btn flat icon color="red" @click="deleteBrand(props.item)">
+            <v-icon>delete</v-icon>
+          </v-btn>
+        </td>
+      </template>
+    </v-data-table>
+  </v-card>
+</template>
+<script>
+import MrBrandForm from "./MrBrandForm";
+export default {
+  name: "MrBrand",
+  components: {
+    MrBrandForm,
+  },
+  data() {
+    return {
+      brandDetail:{},
+      isEdit:false,
+      pagination: {},
+      dialog: false,
+      total: 0,
+      search: "",
+      headers: [
+        {
+          text: "id",
+          align: "center",
+          value: "id",
+        },
+        {
+          text: "品牌名称",
+          align: "center",
+          value: "name",
+        },
+        {
+          text: "品牌logo",
+          align: "center",
+          value: "image",
+        },
+        {
+          text: "首字母",
+          align: "center",
+          value: "letter",
+        },
+        {
+          text: "操作",
+          align: "center",
+          sortable: false,
+          value: "id",
+        },
+      ],
+      desserts: [],
+    };
+  },
+  mounted() {
+    this.getTableData();
+  },
+  methods: {
+    closeDialog () {
+      this.dialog = false;
+      this.getTableData();
+    },
+    addData () {
+      //this.brandDetail = {};
+      this.isEdit = false;
+      this.dialog = true;
+    },
+    editData (obj) {
+      this.brandDetail = obj;
+      this.isEdit = true;
+      this.dialog = true;
+    },
+    getTableData() {
+      this.$http
+        .get("/brand/list", {
+          params: {
+            page: this.pagination.page,
+            rows: this.pagination.rowsPerPage,
+            sort: this.pagination.sortBy,
+            order: this.pagination.descending,
+            name: this.search,
+          },
+        })
+        .then((resp) => {
+          this.desserts = resp.data.data.list;
+          this.total = resp.data.data.total;
+        })
+        .catch((error) => console.log(error));
+    },
+    deleteBrand(item) {
+        this.$message.confirm('此操作将永久删除该品牌, 是否继续?').then(() => {
+          // 发起删除请求
+          this.$http.delete("/brand/delete?id=" + item.id,)
+            .then(() => {
+              // 删除成功，重新加载数据
+              this.$message.success("删除成功！");
+              this.getTableData();
+            })
+        }).catch(() => {
+          this.$message.info("删除已取消！");
+        });
+
+      },
+  },
+  watch: {
+    pagination() {
+      this.getTableData();
+    },
+  },
+};
+</script>
+```
+
+
+
+### 后台
+
+```java
+    @Transactional//事务
+    @Override
+    public Result<JsonObject> editBrandInfo(BrandDTO brandDTO) {
+		
+        //复制一下参数到BrandEntity
+        BrandEntity brandEntity = BaiduBeanUtil.copyProperties(brandDTO, BrandEntity.class);
+        //设置一下首字母
+        brandEntity.setLetter(PinYinUtil.getUpperCase(String.valueOf(brandEntity.getName().toCharArray()[0]), false).toCharArray()[0]);
+        //修改
+        brandMapper.updateByPrimaryKeySelective(brandEntity);
+
+        //根据id值 删除中间表中的关联数据
+        this.deleteCategoryBrandId(brandEntity.getId());
+        //新增中间表的关联数据
+        this.insertCategoryBrandList(brandDTO.getCategories(),brandEntity.getId());
+        return this.setResultSuccess();
+    }
+
+	//提取了删除代码							  品牌管理id
+	private void deleteCategoryBrandId(Integer brandId){
+        //要根据brandId删除中间表的数据,Example参数对象是中间表实体类
+        Example example = new Example(CategoryBrandEntity.class);
+        example.createCriteria().andEqualTo("brandId",brandId);
+        categoryBrandMapper.deleteByExample(example);
+    }
+
+	//提取了新增中间表的方法						需要关联的商品分类id	   品牌管理id
+    private void insertCategoryBrandList(String categories, Integer brandId){
+
+        //因为提取方法中没有返回值 所以如果为空 抛出异常
+        if (StringUtils.isEmpty(categories)) throw new RuntimeException("分类信息不能为空");
+
+        //高级版新增多条商品分类信息
+        if (categories.contains(",")){
+            categoryBrandMapper.insertList(
+                    Arrays.asList(categories.split(","))
+                    .stream()
+                    .map(categoryIdStr -> new CategoryBrandEntity(Integer.valueOf(categoryIdStr)
+                    ,brandId))
+                    .collect(Collectors.toList())
+            );
+        }else{
+            CategoryBrandEntity categoryBrandEntity = new CategoryBrandEntity();
+            categoryBrandEntity.setBrandId(brandId);
+            categoryBrandEntity.setCategoryId(Integer.valueOf(categories));
+
+            categoryBrandMapper.insertSelective(categoryBrandEntity);
+        }
+    }
+```
+
+## 删除
+
+### 前台
+
+在mrBrand.vue中 52行
+
+```vue
+          <v-btn flat icon color="red" @click="deleteBrand(props.item)">
+            <v-icon>delete</v-icon>
+          </v-btn>
+```
+
+在mrBrand.vue中 141行
+
+```vue
+deleteBrand(item) {
+        this.$message.confirm('此操作将永久删除该品牌, 是否继续?').then(() => {
+          // 发起删除请求
+          this.$http.delete("/brand/delete?id=" + item.id,)
+            .then(() => {
+              // 删除成功，重新加载数据
+              this.$message.success("删除成功！");
+              this.getTableData();
+            })
+        }).catch(() => {
+          this.$message.info("删除已取消！");
+        });
+      }
+```
+
+### 后台
+
+```java
+    @Transactional
+    @Override
+    public Result<JsonObject> deleteBrandInfo(Integer id) {
+        brandMapper.deleteByPrimaryKey(id);
+		
+        //删除完品牌管理记得删除他绑定的商品分类信息
+        //删除中间表
+        this.deleteCategoryBrandId(id);
+        return this.setResultSuccess();
+    }
+    
+    //提取了删除代码							  品牌管理id
+	private void deleteCategoryBrandId(Integer brandId){
+        //要根据brandId删除中间表的数据,Example参数对象是中间表实体类
+        Example example = new Example(CategoryBrandEntity.class);
+        example.createCriteria().andEqualTo("brandId",brandId);
+        categoryBrandMapper.deleteByExample(example);
+    }
+```
+
+# SpecGroup的增删改查
+
+## 加载分类信息
+
+前台 index.js 29行
+
+```vue
+route("/item/specification",'/item/specification/Specification',"Specification"),
+```
+
+specification包下Specification.vue
+
+```
+<v-tree url="/category/list" :isEdit="false" @handleClick="handleClick"/>
+```
+
+## 查询
+
+### 前台
+
+SpecGroup.vue 72行
+
+```vue
+loadData(){\
+          this.$http.get("/specgroup/getSpecGroupInfo",{
+              params:{
+                  cid:this.cid
+              }
+          })
+          .then((resp) => {
+              this.groups = resp.data.data;
+          })
+          .catch(() => {
+              this.groups = [];
+          })
+      }
+```
+
+
+
+### 后台
+
+根据传来的cid查询要显示的商品规格
+
+![image-20210105150654636](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105150654636.png)
+
+```java
+   @Override
+    public Result<List<SpecGroupEntity>> getSpecGroupInfo(SpecGroupDTO specGroupDTO) {
+        Example example = new Example(SpecGroupEntity.class);
+        example.createCriteria().andEqualTo("cid",BaiduBeanUtil.copyProperties(specGroupDTO,SpecGroupEntity.class).getCid());
+        List<SpecGroupEntity> list = specGroupMapper.selectByExample(example);
+        return this.setResultSuccess(list);
+    }
+```
+
+## 新增
+
+### 前台
+
+```vue
+save(){
+           this.$http({
+            method: this.isEdit ? 'put' : 'post',
+            url: '/specgroup/save',
+            data: this.group
+          }).then(() => {
+            // 关闭窗口
+            this.show = false;
+            this.$message.success("保存成功！");
+            this.loadData();
+          }).catch(() => {
+              this.$message.error("保存失败！");
+            });
+      }
+```
+
+### 后台
+
+![image-20210105150611776](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105150611776.png)
+
+```java
+    @Transactional
+    @Override
+    public Result<JsonObject> saveSpecGroup(SpecGroupDTO specGroupDTO) {
+        specGroupMapper.insertSelective(BaiduBeanUtil.copyProperties(specGroupDTO,SpecGroupEntity.class));
+        return this.setResultSuccess();
+    }
+```
+
+## 修改
+
+### 前台
+
+```vue
+save(){
+           this.$http({
+            method: this.isEdit ? 'put' : 'post',
+            url: '/specgroup/save',
+            data: this.group
+          }).then(() => {
+            // 关闭窗口
+            this.show = false;
+            this.$message.success("保存成功！");
+            this.loadData();
+          }).catch(() => {
+              this.$message.error("保存失败！");
+            });
+      }
+```
+
+### 后台
+
+![image-20210105150924269](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105150924269.png)
+
+```java
+    @Transactional
+    @Override
+    public Result<JsonObject> updateSpecGroup(SpecGroupDTO specGroupDTO) {
+        specGroupMapper.updateByPrimaryKeySelective(BaiduBeanUtil.copyProperties(specGroupDTO,SpecGroupEntity.class));
+        return this.setResultSuccess();
+    }
+```
+
+## 删除
+
+### 前台
+
+```vue
+ deleteGroup(id){
+          this.$message.confirm("确认要删除分组吗？")
+          .then(() => {
+            this.$http.delete("/specgroup/delete/" + id)
+                .then((resp) => {
+                    if (resp.data.code != 200) {
+                        this.$message.error(resp.data.message);
+                        return;
+                    }
+                    this.$message.success("删除成功");
+                    this.loadData();
+                })
+                .catch(() => {
+                    this.$message.error("删除失败");
+                    this.loadData();
+                })
+          })
+      }
+```
+
+
+
+### 后台
+
+```java
+@Transactional
+@Override
+public Result<JsonObject> deleteSpecGroup(Integer id) {
+    //---------判断该规格下面是否设置了规格参数----------
+    Example example = new Example(SpecParamEntity.class);
+    example.createCriteria().andEqualTo("groupId",id);
+
+    List<SpecParamEntity> specParamList = specParamMapper.selectByExample(example);
+    if (specParamList.size() > 0) return this.setResultError("该规格下面还有规格参数");
+	//---------------------------------------------
+    
+    //删除
+    specGroupMapper.deleteByPrimaryKey(id);
+    return this.setResultSuccess();
+}
+```
+
+# SpecParam的增删改查
+
+## 查询
+
+### 前台
+
+```vue
+loadData() {
+      this.$http
+        .get("/specparam/getSpecParamInfo?groupId=" + this.group.id)
+        .then((resp) => {
+          resp.data.data.forEach(p => {
+              p.segments = p.segments ? p.segments.split(",").map(s => s.split("-")) : [];
+          })
+          this.params = resp.data.data;
+        })
+        .catch(() => {
+          this.params = [];
+        });
+    }
+```
+
+### 后台
+
+点击规格,查询规格下面的规格参数
+
+![image-20210105151719977](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105151719977.png)
+
+```java
+@Override//查询规格参数
+public Result<List<SpecParamEntity>> getSpecParamInfo(SpecParamDTO specParamDTO) {
+    SpecParamEntity specParamEntity = BaiduBeanUtil.copyProperties(specParamDTO,SpecParamEntity.class);
+    Example example = new Example(SpecParamEntity.class);
+    example.createCriteria().andEqualTo("groupId",specParamEntity.getGroupId());
+
+    List<SpecParamEntity> list = specParamMapper.selectByExample(example);
+    return this.setResultSuccess(list);
+}
+```
+
+## 新增
+
+### 前台
+
+```vue
+    save(){
+        const p = {};
+        Object.assign(p, this.param);
+        p.segments = p.segments.map(s => s.join("-")).join(",")
+        this.$http({
+            method: this.isEdit ? 'put' : 'post',
+            url: '/specparam/save',
+            data: p,
+        }).then(() => {
+            // 关闭窗口
+            this.show = false;
+            this.$message.success("保存成功！");
+            this.loadData();
+          }).catch(() => {
+              this.$message.error("保存失败！");
+            });
+    }
+```
+
+### 后台
+
+![image-20210105152147150](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210105152147150.png)
+
+```java
+@Transactional
+@Override
+public Result<JSONObject> saveSpecParam(SpecParamDTO specParamDTO) {
+    specParamMapper.insertSelective(BaiduBeanUtil.copyProperties(specParamDTO,SpecParamEntity.class));
+    return this.setResultSuccess();
+}
+```
+
+## 修改
+
+### 前台
+
+```vue
+    save(){
+        const p = {};
+        Object.assign(p, this.param);
+        p.segments = p.segments.map(s => s.join("-")).join(",")
+        this.$http({
+            method: this.isEdit ? 'put' : 'post',
+            url: '/specparam/save',
+            data: p,
+        }).then(() => {
+            // 关闭窗口
+            this.show = false;
+            this.$message.success("保存成功！");
+            this.loadData();
+          }).catch(() => {
+              this.$message.error("保存失败！");
+            });
+    }
+```
+
+### 后台
+
+```java
+    @Transactional
+    @Override
+    public Result<JSONObject> updateSpecParam(SpecParamDTO specParamDTO) {
+       specParamMapper.updateByPrimaryKey(BaiduBeanUtil.copyProperties(specParamDTO,SpecParamEntity.class));
+        return this.setResultSuccess();
+    }
+```
+
+## 删除
+
+### 前台
+
+```vue
+deleteParam(id) {
+        this.$message.confirm("确认要删除该参数吗？")
+        .then(() => {
+            this.$http.delete("/item/spec/param/" + id)
+            .then(() => {
+                this.$message.success("删除成功");
+            })
+            .catch(() => {
+                this.$message.error("删除失败");
+            })
+        })
+    }
+```
+
+
+
+### 后台
+
+```java
+    @Transactional
+    @Override
+    public Result<JSONObject> deleteSpecParam(Integer id) {
+        specParamMapper.deleteByPrimaryKey(id);
+        return this.setResultSuccess();
+    }
+```
+
+# Goods的曾删改查
+
+## Spu
+
+#### SpuEntity
+
+```java
+package com.baidu.shop.entity;
+
+import lombok.Data;
+
+import javax.persistence.Id;
+import javax.persistence.Table;
+import java.util.Date;
+
+/**
+ * @ClassName SpuEntity
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+@Table(name = "tb_spu")
+@Data
+public class SpuEntity {
+
+    @Id
+    private Integer id;
+
+    private String title;
+
+    private String subTitle;
+
+    private Integer cid1;
+
+    private Integer cid2;
+
+    private Integer cid3;
+
+    private Integer brandId;
+
+    private Integer saleable;
+
+    private Integer valid;
+
+    private Date createTime;
+
+    private Date lastUpdateTime;
+}
+```
+
+#### SpuDTO
+
+```java
+package com.baidu.shop.dto;
+
+import com.baidu.shop.base.BaseDTO;
+import com.baidu.shop.validate.group.MingruiOperation;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
+
+import javax.validation.constraints.NotEmpty;
+import javax.validation.constraints.NotNull;
+import java.util.Date;
+
+/**
+ * @ClassName SpuDTO
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+@ApiModel(value = "spu数据传输DTO")
+@Data
+public class SpuDTO extends BaseDTO {
+
+    @ApiModelProperty(value = "主键",example = "1")
+    @NotNull(message = "主键不能为空",groups = {MingruiOperation.Update.class})
+    private Integer id;
+
+    @ApiModelProperty(value = "标题")
+    @NotEmpty(message = "标题不能为空",groups = {MingruiOperation.Add.class})
+    private String title;
+
+    @ApiModelProperty(value = "子标题")
+    private String subTitle;
+
+    @ApiModelProperty(value = "1级类目id",example = "1")
+    @NotNull(message = "1级类目id不能为空",groups = {MingruiOperation.Add.class})
+    private Integer cid1;
+
+    @ApiModelProperty(value = "1级类目id",example = "1")
+    @NotNull(message = "2级类目id不能为空",groups = {MingruiOperation.Add.class})
+    private Integer cid2;
+
+    @ApiModelProperty(value = "1级类目id",example = "1")
+    @NotNull(message = "3级类目id不能为空",groups = {MingruiOperation.Add.class})
+    private Integer cid3;
+
+    @ApiModelProperty(value = "商品所属品牌id",example = "1")
+    @NotNull(message = "商品所属id不能为空",groups = {MingruiOperation.Add.class})
+    private Integer brandId;
+
+    //不需要验证
+    @ApiModelProperty(value = "是否上架,1上架,0下架",example = "1")
+    private Integer saleable;
+
+    //不需要验证
+    @ApiModelProperty(value = "是否有效,1有效,0无效",example = "1")
+    private Integer valid;
+
+    //不需要验证
+    @ApiModelProperty(value = "添加时间")
+    private Date createTime;
+
+    //不需要验证
+    @ApiModelProperty(value = "最后修改时间")
+    private Date lastUpdateTime;
+
+}
+```
+
+#### 创建GoodsService
+
+```java
+package com.baidu.shop.service;
+
+import com.baidu.shop.base.Result;
+import com.baidu.shop.dto.SpuDTO;
+import com.baidu.shop.entity.SpuEntity;
+import com.github.pagehelper.PageInfo;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import org.springframework.web.bind.annotation.GetMapping;
+
+/**
+ * @ClassName GoodsService
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+@Api(tags = "商品接口")
+public interface GoodsService {
+}
+```
+
+#### SpuMapper
+
+```java
+package com.baidu.shop.mapper;
+
+import com.baidu.shop.entity.SpuEntity;
+import tk.mybatis.mapper.common.Mapper;
+
+/**
+ * @ClassName SpuMapper
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/5
+ * @Version V1.0
+ **/
+public interface SpuMapper extends Mapper<SpuEntity> {
+}
+```
+
+#### 创建GoodsServiceImpl
+
+## 查询
+
+```java
+@Override
+public Result<PageInfo<SpuEntity>> getSpuInfo(SpuDTO spuDTO) {
+    SpuEntity spuEntity = BaiduBeanUtil.copyProperties(spuDTO, SpuEntity.class);
+    
+    if(!StringUtils.isEmpty(spuDTO.getSort())){
+        PageHelper.orderBy(spuDTO.getOrderBy());
+    }
+
+    if (ObjectUtil.isNotNull(spuDTO.getPage()) && ObjectUtil.isNotNull(spuDTO.getRows())){
+        PageHelper.startPage(spuDTO.getPage(),spuDTO.getRows());
+    }
+
+    Example example = new Example(SpuEntity.class);
+    Example.Criteria criteria = example.createCriteria();
+
+    //判断前台传来的
+    if (ObjectUtil.isNotNull(spuEntity.getSaleable()) && spuEntity.getSaleable() != 2){
+        criteria.andEqualTo("saleable",spuEntity.getSaleable());
+    }
+    if (ObjectUtil.isNotNull(spuEntity.getTitle())){
+        criteria.andLike("title","%"+spuEntity.getTitle()+"%");
+    }
+
+    List<SpuEntity> list = spuMapper.selectByExample(example);
+    PageInfo<SpuEntity> pageInfo = new PageInfo<>(list);
+    return this.setResultSuccess(pageInfo);
+}
+```
+
+## 新增
+
+GoodsForm.vue	18行
+
+```vue
+			<v-flex xs5>
+                <!--商品分类-->
+                <v-cascader
+                  url="/category/list"
+                  required
+                  showAllLevels
+                  v-model="goods.categories"
+                  label="请选择商品分类"/>
+              </v-flex>
+```
+
+新增组件就可以点击选择商品分类
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106211629235.png" alt="image-20210106211629235" style="zoom: 50%;" />
+
+但是此时点击 分类后 所属品牌还查询不到值
+
+GoodsForm.vue	282行
+
+```vue
+ 		this.$http
+            .get("/brand/getBrandInfoByCategoryId",{
+              params:{
+                cid:this.goods.categories[2].id
+              }
+            })
+            .then((resp) => {
+              console.log(resp);
+              this.brandOptions = resp.data.data;
+            });
+```
+
+在BrandService中 写入
+
+```java
+	@ApiOperation(value = "通过id查询品牌")
+    @GetMapping(value = "brand/getBrandInfoByCategoryId")
+    Result<List<BrandEntity>> getBrandInfoByCategoryId(Integer cid);
+```
+
+在BrandMapper中自定义sql
+
+```java
+@Select(value = "select * from tb_brand b where b.id in(select cb.brand_id from tb_category_brand cb where cb.category_id=#{cid})")
+    List<BrandEntity> getBrandInfoByCategoryId(Integer cid);
+```
+
+在BrandServiceImpl中实现
+
+```java
+@Override
+public Result<List<BrandEntity>> getBrandInfoByCategoryId(Integer cid) {
+    List<BrandEntity> list = brandMapper.getBrandInfoByCategoryId(cid);
+    return this.setResultSuccess(list);
+}
+```
+
+这样新增组件 选中商品分类后就可以选择 所属品牌 的值了
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106211750330.png" alt="image-20210106211750330" style="zoom:50%;" />
+
+此时选择 所属品牌 后 页面会报错 找不到404
+
+GoodsForm.vue	293行
+
+这个是用来查询规格参数param表数据的  根据商品分类的id  查询 所有规格的 规格参数信息
+
+```vue
+		// 根据分类查询规格参数
+          this.$http
+            .get("/specparam/getSpecParamInfo",{
+              params:{
+                cid:this.goods.categories[2].id
+              }
+            })
+            .then((resp) => {
+              let specs = [];
+              let template = [];
+              if (this.isEdit){
+                specs = JSON.parse(this.goods.spuDetail.genericSpec);
+                template = JSON.parse(this.goods.spuDetail.specialSpec);
+              }
+```
+
+在SpecificationServiceImpl的getSpecParamInfo方法中添加
+
+```java
+    @Override//查询规格参数
+    public Result<List<SpecParamEntity>> getSpecParamInfo(SpecParamDTO specParamDTO) {
+        SpecParamEntity specParamEntity = BaiduBeanUtil.copyProperties(specParamDTO,SpecParamEntity.class);
+        Example example = new Example(SpecParamEntity.class);
+        Example.Criteria criteria = example.createCriteria();
+
+        if (ObjectUtil.isNotNull(specParamEntity.getGroupId())){
+            criteria.andEqualTo("groupId",specParamEntity.getGroupId());
+        }
+        //---------添加----------
+        //根据商品分类的id  查询 所有规格的 规格参数信息
+        if (ObjectUtil.isNotNull(specParamEntity.getCid())){
+            criteria.andEqualTo("cid",specParamEntity.getCid());
+        }
+        //----------------------
+
+        List<SpecParamEntity> list = specParamMapper.selectByExample(example);
+        return this.setResultSuccess(list);
+    }
+```
+
+这样新增组件的第三步骤就有了 商品分类的 规格参数的信息
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106221754447.png" alt="image-20210106221754447" style="zoom:50%;" />
+
+### 添加图片
+
+GoodsForm.vue	57行
+
+```vue
+      <!--2、商品描述-->
+      <v-stepper-content step="2">
+        <v-editor v-model="goods.spuDetail.description" upload-url="/upload"/>
+      </v-stepper-content>
+```
+
+就可以点击上传图片了
+
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106222742131.png" alt="image-20210106222742131" style="zoom: 67%;" />
+
+GoodsForm.vue	119行
+
+```vue
+              <!--图片上传组件-->
+              <v-upload v-model="props.item.images" url="/upload"/>
+```
+<img src="C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210106223213605.png" alt="image-20210106223213605" style="zoom: 50%;" />
+
+GoodsForm.vue 225行
+
+```vue
+      //console.log(goodsParams)
+      this.$http({
+        method: this.isEdit ? "put" : "post",
+        url: "/goods/save",
+        data: goodsParams
+      })
+        .then(() => {
+          // 成功，关闭窗口
+          this.$emit("closeForm");
+          // 提示成功
+          this.$message.success("保存成功了");
+        })
+        .catch(() => {
+          this.$message.error("保存失败！");
+        });
+```
+
+SkuEntity
+
+```java
+package com.baidu.shop.entity;
+
+import lombok.Data;
+
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.Table;
+import java.util.Date;
+
+/**
+ * @ClassName SkuEntity
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@Table(name = "tb_sku")
+@Data
+public class SkuEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private Integer spuId;
+
+    private String title;
+
+    private String images;
+
+    private Integer price;
+
+    private String indexes;
+
+    private String ownSpec;
+
+    private Integer enable;
+
+    private Date createTime;
+
+    private Date lastUpdateTime;
+}
+```
+
+SpuDetailEntity
+
+```java
+package com.baidu.shop.entity;
+
+import lombok.Data;
+
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.Table;
+
+/**
+ * @ClassName SpuDetailEntity
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@Table(name = "tb_spu_detail")
+@Data
+public class SpuDetailEntity {
+
+    @Id
+    private Integer spuId;
+
+    private String description;
+
+    private String genericSpec;
+
+    private String specialSpec;
+
+    private String packingList;
+
+    private String afterService;
+
+}
+```
+
+StockEntity
+
+```java
+package com.baidu.shop.entity;
+
+import lombok.Data;
+
+import javax.persistence.Id;
+import javax.persistence.Table;
+
+/**
+ * @ClassName StockEntity
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@Table(name = "tb_stock")
+@Data
+public class StockEntity {
+
+    @Id
+    private Long skuId;
+
+    private Integer seckillStock;
+
+    private Integer seckillTotal;
+
+    private Integer stock;
+}
+```
+
+SkuDTO
+
+```java
+package com.baidu.shop.dto;
+
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
+
+import javax.jnlp.IntegrationService;
+import javax.persistence.Id;
+import java.util.Date;
+
+/**
+ * @ClassName SkuDTO
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@ApiModel(value = "SKU属性数据传输DTO")
+@Data
+public class SkuDTO {
+    @ApiModelProperty(value = "主键",example = "1")
+    private Long id;
+
+    @ApiModelProperty(value = "spu主键",example = "1")
+    private Integer spuId;
+
+    @ApiModelProperty(value = "商品标题")
+    private String title;
+
+    @ApiModelProperty(value = "商品图片,多个图片以','分割")
+    private String images;
+
+    @ApiModelProperty(value = "销售价格,单位为分",example = "1")
+    private Integer price;
+
+    @ApiModelProperty(value = "特有规格属性在spu属性模板中的对应下标组合")
+    private String indexes;
+
+    @ApiModelProperty(value = "sku的特有规格此参数键值对,json格式,反序列化时是哟ingLinkedHashMap,保证有序")
+    private String ownSpec;
+
+    @ApiModelProperty(value = "是否有效,0无效,1有效",example = "1")
+    private Boolean enable;
+
+    @ApiModelProperty(value = "添加时间")
+    private Date createTime;
+
+    @ApiModelProperty(value = "最后修改时间")
+    private Date lastUpdateTime;
+
+    @ApiModelProperty(value = "库存")
+    private Integer stock;
+}
+```
+
+SpuDetailEntity
+
+```java
+package com.baidu.shop.dto;
+
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
+
+/**
+ * @ClassName SpuDetailDTO
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@ApiModel(value = "spu大字段数据层传输DTO")
+@Data
+public class SpuDetailDTO {
+
+    @ApiModelProperty(value = "spu主键",example = "1")
+    private Integer spuId;
+
+    @ApiModelProperty(value = "商品描述信息")
+    private String description;
+
+    @ApiModelProperty(value = "通过规格参数数据")
+    private String genericSpec;
+
+    @ApiModelProperty(value = "特有规格参数及可选值信息,json格式")
+    private String specialSpec;
+
+    @ApiModelProperty(value = "包装清单")
+    private String packingList;
+
+    @ApiModelProperty(value = "售后服务")
+    private String afterService;
+}
+```
+
+StockDTO
+
+```java
+package com.baidu.shop.dto;
+
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Data;
+
+/**
+ * @ClassName StockDTO
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+@ApiModel(value = "库存数据传输DTO")
+@Data
+public class StockDTO {
+
+    @ApiModelProperty(value = "sku主键",example = "1")
+    private Long skuId;
+
+    @ApiModelProperty(value = "可秒杀库存",example = "1")
+    private Integer seckillStock;
+
+    @ApiModelProperty(value = "秒杀总数量",example = "1")
+    private Integer seckillTotal;
+
+    @ApiModelProperty(value = "库存数量",example = "1")
+    private Integer stock;
+}
+```
+
+在SpuDTO中添加两个属性
+
+```java
+
+    @ApiModelProperty(value = "大字段数据")
+    private SpuDetailDTO spuDetail;
+
+    @ApiModelProperty(value = "sku属性数据集合")
+    private List<SkuDTO> skus;
+```
+
+GoodsService 
+
+```java
+    @ApiOperation(value = "新建商品")
+    @PostMapping(value = "goods/save")
+    Result<JsonObject> saveGoods(@RequestBody SpuDTO spuDTO);
+```
+
+SkuMapper
+
+```java
+package com.baidu.shop.mapper;
+
+import com.baidu.shop.dto.SkuDTO;
+import com.baidu.shop.entity.SkuEntity;
+import org.apache.ibatis.annotations.Select;
+import tk.mybatis.mapper.common.Mapper;
+
+import java.util.List;
+
+/**
+ * @ClassName SkuMapper
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+public interface SkuMapper extends Mapper<SkuEntity> {
+}
+```
+
+SpuDetailMapper
+
+```java
+package com.baidu.shop.mapper;
+
+import com.baidu.shop.entity.SpuDetailEntity;
+import tk.mybatis.mapper.common.Mapper;
+
+/**
+ * @ClassName SpuDetailMapper
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+public interface SpuDetailMapper extends Mapper<SpuDetailEntity> {
+}
+```
+
+StockMapper
+
+```java
+package com.baidu.shop.mapper;
+
+import com.baidu.shop.entity.StockEntity;
+import tk.mybatis.mapper.common.Mapper;
+
+/**
+ * @ClassName StockMapper
+ * @Description: TODO
+ * @Author hexiangshen
+ * @Date 2021/1/7
+ * @Version V1.0
+ **/
+public interface StockMapper extends Mapper<StockEntity> {
+}
+```
+
+GoodsServiceImpl
+
+```java
+    //新增!!!!!!!
+    @Override
+    @Transactional
+    public Result<JsonObject> saveGoods(SpuDTO spuDTO) {
+        System.out.println(spuDTO);
+        final Date date = new Date();
+        //新增spu
+        SpuEntity spuEntity = BaiduBeanUtil.copyProperties(spuDTO, SpuEntity.class);
+        spuEntity.setSaleable(1);
+        spuEntity.setValid(1);
+        spuEntity.setCreateTime(date);
+        spuEntity.setLastUpdateTime(date);
+        spuMapper.insertSelective(spuEntity);
+
+        //新增大字段
+        SpuDetailDTO spuDetail = spuDTO.getSpuDetail();
+        SpuDetailEntity spuDetailEntity = BaiduBeanUtil.copyProperties(spuDetail, SpuDetailEntity.class);
+        spuDetailEntity.setSpuId(spuEntity.getId());
+        spuDetailMapper.insertSelective(spuDetailEntity);
+
+        //新增sku,sku可能时多条数据
+        List<SkuDTO> skus = spuDTO.getSkus();
+        skus.stream().forEach(skuDTO -> {
+            SkuEntity skuEntity = BaiduBeanUtil.copyProperties(skuDTO, SkuEntity.class);
+            skuEntity.setSpuId(spuEntity.getId());
+            skuEntity.setCreateTime(date);
+            skuEntity.setLastUpdateTime(date);
+            skuMapper.insertSelective(skuEntity);
+
+            //新增tock
+            StockEntity stockEntity = new StockEntity();
+            stockEntity.setSkuId(skuEntity.getId());
+            stockEntity.setStock(skuDTO.getStock());
+            stockMapper.insertSelective(stockEntity);
+        });
+        return this.setResultSuccess();
+    }
+```
+
+## 修改
+
+### 回显
+
+源码vue中bug很多
+
+Goods.vue
+
+![image-20210108210840414](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210108210840414.png)
+
+![image-20210108210919527](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210108210919527.png)
+
+![image-20210108210930141](C:\Users\hxs\AppData\Roaming\Typora\typora-user-images\image-20210108210930141.png)
+
+Goods.vue editItem方法
+
+```vue
+editItem(item) {
+          this.isEdit = true;
+          this.show = true;
+          let obj = item;
+        // 查询商品详情
+        this.$http.get("/goods/getSpuDetailBySpu",{
+          params:{
+            
+            spuId:item.id
+          }
+        })
+          .then(resp => {
+            //this.selectedGoods.spuDetail = resp.data;
+            //this.selectedGoods.spuDetail.specTemplate = JSON.parse(resp.data.data.genericSpec);
+            //this.selectedGoods.spuDetail.specifications = JSON.parse(resp.data.data.specialSpec);
+            obj.categories = [];
+            obj.spuDetail = resp.data.data;
+            obj.spuDetail.specTemplate = JSON.parse(resp.data.data.genericSpec);
+            obj.spuDetail.specifications = JSON.parse(resp.data.data.specialSpec);
+
+            this.$http.get('/goods/getSkuBySpuId',{
+              params:{
+                spuId:item.id
+              }
+            })
+            .then(resp => {
+              obj.skus = resp.data.data;
+              this.selectedGoods = obj;
+            })
+            .catch(erro => console.log(erro))
+          })
+      }
+```
+
+GoodsService
+
+```java
+    @ApiOperation(value = "获取spu详细信息")
+    @GetMapping(value = "goods/getSpuDetailBySpu")
+    public Result<SpuDetailEntity> getSpuDetailBySpu(Integer spuId);
+
+    @ApiOperation(value = "获取sku信息")
+    @GetMapping(value = "goods/getSkuBySpuId")
+    Result<SkuDTO> getSkuBySpuId(Integer spuId);
+```
+
+SkuMapper
+
+```java
+@Select(value = "select k.*,stock from tb_sku k , tb_stock t where k.id =t.sku_id and k.spu_id=#{spuId}")
+List<SkuDTO> selectSkuAndStockBySpuId(Integer spuId);
+```
+
+ GoodsServiceImpl
+
+```java
+    @Override
+    public Result<SpuDetailEntity> getSpuDetailBySpu(Integer spuId) {
+        SpuDetailEntity spuDetailEntity = spuDetailMapper.selectByPrimaryKey(spuId);
+        return this.setResultSuccess(spuDetailEntity);
+    }
+
+    @Override
+    public Result<SkuDTO> getSkuBySpuId(Integer spuId) {
+        List<SkuDTO> list = skuMapper.selectSkuAndStockBySpuId(spuId);
+
+        return this.setResultSuccess(list);
+    }
+```
+
+### 修改
+
+GoodsForm.vue
+
+```vue
+this.$http({
+    method: this.isEdit ? "put" : "post",
+    url: "/goods/save",
+    data: goodsParams
+})
+```
+
+GoodsService
+
+```java
+    @ApiOperation(value = "修改商品")
+    @PutMapping(value = "goods/save")
+    Result<JsonObject> editGoods(@Validated({MingruiOperation.Update.class}) @RequestBody SpuDTO spuDTO);
+```
+
+修改的步骤
+
+\1. 修改spu
+
+\2. 修改spuDetail
+
+\3. 通过spuId查询出来将要被删除的sku
+
+\4. 获取所有将要被删除skuId(如果直接删除的话stock没有办法删除
+
+\5. 批量删除sku
+
+\6. 批量删除stock
+
+\7. 将新的数据新增到数据库
+
+SkuMapper
+
+添加DeleteByIdListMapper<SkuEntity,Long>
+
+```java
+public interface SkuMapper extends Mapper<SkuEntity>, DeleteByIdListMapper<SkuEntity,Long> {
+    @Select(value = "select k.*,stock from tb_sku k , tb_stock t where k.id = t.sku_id and k.spu_id=#{spuId}")
+    List<SkuDTO> selectSkuAndStockBySpuId(Integer spuId);
+}
+```
+
+StockMapper
+
+添加 DeleteByIdListMapper<StockEntity,Long> 
+
+```java
+public interface StockMapper extends Mapper<StockEntity>, DeleteByIdListMapper<StockEntity,Long> {
+}
+```
+
